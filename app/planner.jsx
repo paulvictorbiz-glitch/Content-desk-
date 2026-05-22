@@ -1,447 +1,334 @@
-// Planner — spreadsheet-tight table + topics manager + pattern editor + auto-generate.
+// Planner — mirrors the reference sheet's "Planable CSV Output" tab:
+// VIDEOS on the left, PICTURES on the right, one row per scheduled day.
+// Editable; edits persist to localStorage (see state.jsx). "Sync from Sheet"
+// pulls a fresh copy via drive-sync/sheet-sync.py.
+
+const PCOLS = '34px minmax(140px,1.2fr) minmax(185px,2fr) 100px 96px ' +
+              'minmax(116px,1fr) minmax(175px,1.8fr) minmax(175px,1.8fr) 100px 32px';
 
 function Planner() {
   const { state, dispatch, toast } = useStore();
-  const { route, go } = useRoute();
-  const filter = route.query.filter || 'all';
-  const highlightId = route.query.highlight || null;
+  const { go } = useRoute();
+  const [syncing, setSyncing] = React.useState(false);
+  const rows = state.planner;
 
-  const [picker, setPicker] = React.useState(null); // {postId, column}
-  const [pickerCellRect, setPickerCellRect] = React.useState(null);
-  const [editingCell, setEditingCell] = React.useState(null); // {postId, column}
-  const [showPatternPanel, setShowPatternPanel] = React.useState(false);
-  const [showTopicPanel, setShowTopicPanel] = React.useState(false);
-  const [selected, setSelected] = React.useState(new Set());
+  // Drive-link lookup — match a sheet title/attachment to a Drive asset's link.
+  const driveLink = React.useMemo(() => {
+    const norm = (s) => (s || '').toLowerCase().replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[^a-z0-9]+/g, '');
+    const map = {};
+    state.assets.forEach(a => {
+      if (!a.webViewLink) return;
+      [a.title, a.filename].forEach(k => {
+        const n = norm(k);
+        if (n && !map[n]) map[n] = a.webViewLink;
+      });
+    });
+    return (name) => map[norm(name)] || null;
+  }, [state.assets]);
 
-  const assetMap = React.useMemo(() => Object.fromEntries(state.assets.map(a => [a.id, a])), [state.assets]);
-
-  // Filter rows
-  const rows = state.posts.filter(p => {
-    if (filter === 'missing-asset' && p.assetId) return false;
-    if (filter === 'missing-captions' && p.captionStatus === 'final') return false;
-    if (filter === 'ready-to-export' && !(p.captionStatus === 'final' && p.exportStatus === 'not')) return false;
-    return true;
-  }).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-
-  // Auto-scroll highlight into view
-  const rowRefs = React.useRef({});
-  React.useEffect(() => {
-    if (highlightId && rowRefs.current[highlightId]) {
-      const el = rowRefs.current[highlightId];
-      const parent = el.closest('.scroll');
-      if (parent) {
-        const top = el.offsetTop - parent.clientHeight / 2 + el.clientHeight / 2;
-        parent.scrollTo({ top, behavior: 'smooth' });
+  const syncSheet = async () => {
+    setSyncing(true);
+    toast('Syncing planner from the reference sheet…', 'accent');
+    try {
+      const res = await fetch('/api/sync-sheet', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        // Drop the local working copy so the fresh sheet data loads.
+        try { localStorage.removeItem('cd_planner'); } catch (e) {}
+        toast(`Synced ${data.count != null ? data.count + ' ' : ''}planner rows — reloading…`, 'ok');
+        setTimeout(() => window.location.reload(), 1100);
+      } else {
+        setSyncing(false);
+        console.error('Sheet sync failed:', data.error);
+        toast('Sheet sync failed — check the server window', 'accent');
       }
+    } catch (e) {
+      setSyncing(false);
+      toast('Sheet sync failed: ' + e.message, 'accent');
     }
-  }, [highlightId]);
+  };
+
+  const videoCount = rows.filter(r => r.video && (r.video.title || '').trim()).length;
+  const picCount = rows.filter(r => r.picture && ((r.picture.description || '').trim() || (r.picture.attachment || '').trim())).length;
+  const postedCount = rows.filter(r => r.posted).length;
 
   return (
     <>
-      <ScreenHeader title="Planner" sub={`${state.posts.length} planned posts · ${state.pattern.slots.length} slots/day`}>
-        <Btn kind="ghost" icon={<Icon name="calendar" size={13} />} onClick={() => setShowPatternPanel(true)}>Pattern</Btn>
-        <Btn kind="ghost" icon={<Icon name="dot" size={13} />} onClick={() => setShowTopicPanel(true)}>Topics</Btn>
-        <Btn kind="ghost" icon={<Icon name="download" size={13} />}
-          onClick={() => go({ tab: 'export' })}>Export</Btn>
-        <Btn kind="primary" icon={<Icon name="plus" size={13} />}
-          onClick={() => addRow(state, dispatch, toast)}>Add row</Btn>
+      <ScreenHeader title="Planner"
+        sub={rows.length
+          ? `${rows.length} rows · ${videoCount} videos · ${picCount} pictures · ${postedCount} on Planable`
+          : 'Mirrors the reference sheet — Planable CSV Output'}>
+        <Btn kind="ghost" disabled={syncing} onClick={syncing ? undefined : syncSheet}
+          icon={<span className={syncing ? 'spin' : ''} style={{ display: 'inline-flex' }}><Icon name="refresh" size={13} /></span>}>
+          {syncing ? 'Syncing…' : 'Sync from Sheet'}
+        </Btn>
+        <Btn kind="ghost" icon={<Icon name="download" size={13} />} onClick={() => go({ tab: 'export' })}>Export</Btn>
+        <Btn kind="primary" icon={<Icon name="plus" size={13} />} onClick={() => dispatch({ type: 'addPlannerRow' })}>Add row</Btn>
       </ScreenHeader>
 
-      <Toolbar>
-        <FilterChips />
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11.5, color: UI.muted }}>{rows.length} of {state.posts.length} rows</span>
-      </Toolbar>
-
-      <PlannerLegend />
-
-      <div className="scroll" style={{ flex: 1, overflow: 'auto', background: UI.panel }}>
-        <div style={{
-          position: 'sticky', top: 0, zIndex: 3,
-          display: 'grid', gridTemplateColumns: PLANNER_COLS,
-          background: UI.panel2, borderBottom: `1px solid ${UI.line}`,
-          fontSize: 11, color: UI.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5,
-        }}>
-          {['', '#', 'Date', 'Time', 'Asset', 'Type', 'Topic', 'Caption', 'Export', ''].map((h, i) => (
-            <div key={i} style={{ padding: '9px 10px', borderRight: i < 9 ? `1px solid ${UI.line2}` : 'none' }}>
-              {i === 0 ? null : h}
-            </div>
-          ))}
-        </div>
-
-        {rows.map((p, i) => {
-          const asset = p.assetId ? assetMap[p.assetId] : null;
-          const isHighlighted = p.id === highlightId;
-          return (
-            <PlannerRow key={p.id} post={p} asset={asset} idx={i + 1}
-              highlight={isHighlighted}
-              selected={selected.has(p.id)}
-              onSelect={(v) => {
-                const s = new Set(selected);
-                if (v) s.add(p.id); else s.delete(p.id);
-                setSelected(s);
-              }}
-              onPick={(column, rect) => { setPicker({ postId: p.id, column }); setPickerCellRect(rect); }}
-              onEdit={(column) => setEditingCell({ postId: p.id, column })}
-              editingCell={editingCell?.postId === p.id ? editingCell.column : null}
-              setEditing={setEditingCell}
-              rowRef={(el) => { rowRefs.current[p.id] = el; }}
-            />
-          );
-        })}
-
-        {/* add row */}
-        <button onClick={() => addRow(state, dispatch, toast)} className="row-hover" style={{
-          display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', width: '100%',
-          fontSize: 12.5, color: UI.muted, textAlign: 'left', borderBottom: `1px solid ${UI.line2}`,
-        }}>
-          <Icon name="plus" size={14} />
-          <span>Add row — auto-fills date (next free slot) and applies pattern topic</span>
-        </button>
-      </div>
-
-      {/* status bar */}
-      <div style={{
-        padding: '7px 24px', borderTop: `1px solid ${UI.line}`, background: UI.panel2,
-        display: 'flex', alignItems: 'center', gap: 14, fontSize: 11.5, color: UI.muted, flexShrink: 0,
-      }}>
-        <span><b style={{ color: UI.ink }}>{rows.length}</b> rows</span>
-        <span>· <b style={{ color: UI.ok }}>{rows.filter(r => r.captionStatus === 'final').length}</b> final</span>
-        <span>· <b style={{ color: UI.warn }}>{rows.filter(r => r.captionStatus === 'draft').length}</b> draft</span>
-        <span>· <b style={{ color: UI.accent }}>{rows.filter(r => r.captionStatus === 'empty').length}</b> empty</span>
-        <span>· <b style={{ color: UI.warn }}>{rows.filter(r => !r.assetId).length}</b> missing asset</span>
-        <div style={{ flex: 1 }} />
-        <span className="mono" style={{ fontSize: 11 }}>↹ tab next · ⌘D duplicate · ⌫ delete</span>
-      </div>
-
-      {picker && (
-        <AssetPickerPopover post={state.posts.find(p => p.id === picker.postId)}
-          rect={pickerCellRect}
-          onPick={(assetId, opts) => {
-            const asset = state.assets.find(a => a.id === assetId);
-            const patch = { assetId, type: asset.type };
-            if (opts?.applyTopic) patch.topicId = asset.topic;
-            dispatch({ type: 'updatePost', id: picker.postId, patch });
-            setPicker(null);
-            toast(`Linked ${asset.filename}`, 'ok');
-          }}
-          onClose={() => setPicker(null)} />
+      {rows.length === 0 ? (
+        <Empty icon={<Icon name="planner" size={28} color={UI.faint} />}
+          title="No planner rows yet"
+          desc="Pull the schedule from the reference sheet's 'Planable CSV Output' tab, or add a row manually."
+          action={<Btn kind="primary" onClick={syncSheet} icon={<Icon name="refresh" size={13} />}>Sync from Sheet</Btn>} />
+      ) : (
+        <PlannerTable rows={rows} driveLink={driveLink} dispatch={dispatch} />
       )}
-      {showPatternPanel && <PatternPanel onClose={() => setShowPatternPanel(false)} />}
-      {showTopicPanel && <TopicPanel onClose={() => setShowTopicPanel(false)} />}
     </>
   );
 }
 
-const PLANNER_COLS = '40px 38px 110px 70px minmax(0, 1.5fr) 70px 130px 100px 110px 38px';
-
-function FilterChips() {
-  const { route, go } = useRoute();
-  const { state } = useStore();
-  const f = route.query.filter || 'all';
-  const counts = {
-    all: state.posts.length,
-    'missing-asset': state.posts.filter(p => !p.assetId).length,
-    'missing-captions': state.posts.filter(p => p.captionStatus !== 'final').length,
-    'ready-to-export': state.posts.filter(p => p.captionStatus === 'final' && p.exportStatus === 'not').length,
-  };
-  const set = (val) => go({ tab: 'planner', query: val === 'all' ? {} : { filter: val } });
-  const chips = [
-    { id: 'all', label: 'All', tone: 'soft' },
-    { id: 'missing-asset', label: 'Missing asset', tone: 'warn' },
-    { id: 'missing-captions', label: 'Missing captions', tone: 'accent' },
-    { id: 'ready-to-export', label: 'Ready to export', tone: 'ok' },
-  ];
+function PlannerTable({ rows, driveLink, dispatch }) {
+  const colHead = ['#', 'Title', 'Caption', 'Date · Time', 'Planable',
+    'Picture', 'Description', 'Quote', 'Date · Time', ''];
   return (
-    <div style={{ display: 'flex', gap: 4 }}>
-      {chips.map(c => {
-        const active = f === c.id;
-        return (
-          <button key={c.id} onClick={() => set(c.id)} style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px',
-            background: active ? UI.ink : UI.panel,
-            color: active ? '#fff' : UI.ink2,
-            border: `1px solid ${active ? UI.ink : UI.line}`,
-            borderRadius: 999, fontSize: 12, fontWeight: 500,
-          }}>
-            {c.label}
-            <span style={{
-              background: active ? 'rgba(255,255,255,.18)' : UI.panel3,
-              color: active ? '#fff' : UI.muted,
-              fontSize: 10.5, padding: '0px 6px', borderRadius: 999, fontWeight: 600,
-              fontVariantNumeric: 'tabular-nums',
-            }}>{counts[c.id]}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function PlannerLegend() {
-  return (
-    <div style={{
-      padding: '6px 24px', display: 'flex', alignItems: 'center', gap: 14, fontSize: 11,
-      color: UI.muted, background: UI.panel2, borderBottom: `1px solid ${UI.line2}`,
-      flexShrink: 0,
-    }}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-        <span style={{ width: 3, height: 12, background: UI.accent, borderRadius: 2 }} />
-        Missing asset
-      </span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-        <span style={{ width: 3, height: 12, background: UI.warn, borderRadius: 2 }} />
-        Empty / draft caption
-      </span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-        <span style={{ width: 3, height: 12, background: UI.ok, borderRadius: 2 }} />
-        Ready to export
-      </span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-        <span style={{ width: 3, height: 12, background: UI.line, borderRadius: 2 }} />
-        Already exported
-      </span>
-    </div>
-  );
-}
-
-function PlannerRow({ post, asset, idx, highlight, selected, onSelect, onPick, onEdit, editingCell, setEditing, rowRef }) {
-  const { state, dispatch } = useStore();
-  const { go } = useRoute();
-  const isToday = post.date === window.DATA.iso(window.DATA.TODAY);
-  const isPast = daysFromToday(post.date) < 0;
-  const readyToExport = post.captionStatus === 'final' && post.exportStatus === 'not';
-
-  // Left rail color
-  let railColor = 'transparent';
-  if (!post.assetId) railColor = UI.accent;
-  else if (post.captionStatus !== 'final') railColor = UI.warn;
-  else if (post.exportStatus === 'exported') railColor = UI.line;
-  else railColor = UI.ok;
-
-  const bg = highlight ? UI.accentBg : selected ? UI.infoBg : (isToday ? UI.panel2 : UI.panel);
-  const cellBorderRight = `1px solid ${UI.line2}`;
-
-  const cellRef = React.useRef(null);
-  const openPicker = (col) => {
-    const rect = cellRef.current?.getBoundingClientRect();
-    onPick(col, rect);
-  };
-
-  return (
-    <div ref={rowRef} className="row-hover" style={{
-      display: 'grid', gridTemplateColumns: PLANNER_COLS, alignItems: 'stretch',
-      borderBottom: `1px solid ${UI.line2}`, background: bg,
-      borderLeft: `3px solid ${railColor}`, marginLeft: -3,
-      transition: 'background .15s', position: 'relative',
-      opacity: isPast && post.exportStatus === 'exported' ? 0.6 : 1,
-    }}>
-      <div style={{ padding: '8px 10px', borderRight: cellBorderRight, display: 'flex', alignItems: 'center' }}>
-        <input type="checkbox" checked={selected} onChange={(e) => onSelect(e.target.checked)} />
-      </div>
-      <div style={{ padding: '8px 10px', borderRight: cellBorderRight, fontSize: 11, color: UI.faint, alignSelf: 'center' }} className="mono">{idx}</div>
-      <PlannerCell editing={editingCell === 'date'} onClick={() => setEditing({ postId: post.id, column: 'date' })}
-        onCommit={(v) => { dispatch({ type: 'updatePost', id: post.id, patch: { date: v } }); setEditing(null); }}
-        value={post.date} sm mono />
-      <PlannerCell editing={editingCell === 'time'} onClick={() => setEditing({ postId: post.id, column: 'time' })}
-        onCommit={(v) => { dispatch({ type: 'updatePost', id: post.id, patch: { time: v } }); setEditing(null); }}
-        value={post.time} sm mono color={UI.ink2} />
-      <div ref={cellRef} onClick={() => openPicker('asset')}
-        className="clickable" style={{
-          padding: '6px 10px', borderRight: cellBorderRight, display: 'flex', alignItems: 'center', gap: 8,
-          cursor: 'pointer', minWidth: 0,
-        }}>
-        {asset ? (
-          <>
-            <MediaThumb asset={asset} size={24} />
-            <div style={{ minWidth: 0 }}>
-              <div className="truncate mono" style={{ fontSize: 11.5 }}>{asset.filename}</div>
-            </div>
-          </>
-        ) : (
-          <span style={{ color: UI.accent, fontStyle: 'italic', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <Icon name="search" size={12} /> Click to link asset…
-          </span>
-        )}
-      </div>
-      <div style={{ padding: '8px 10px', borderRight: cellBorderRight, fontSize: 12, color: UI.ink2 }}>
-        {post.type && <Pill tone="soft" size="sm">{post.type}</Pill>}
-      </div>
-      <PlannerTopicCell post={post} dispatch={dispatch} topics={state.topics} />
-      <div style={{ padding: '8px 10px', borderRight: cellBorderRight, display: 'flex', alignItems: 'center' }}>
-        <button onClick={() => go({ tab: 'captions', query: { post: post.id } })}>
-          <CaptionPill status={post.captionStatus} size="sm" />
-        </button>
-      </div>
-      <div style={{ padding: '8px 10px', borderRight: cellBorderRight, display: 'flex', alignItems: 'center', gap: 6 }}>
-        {post.exportStatus === 'exported'
-          ? <Pill tone="ok" size="sm">exported</Pill>
-          : readyToExport
-            ? <Pill tone="soft" size="sm" style={{ color: UI.ok, background: UI.okBg }}>ready</Pill>
-            : <span style={{ color: UI.faint, fontSize: 11 }}>—</span>}
-      </div>
-      <div style={{ padding: '6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <button onClick={() => dispatch({ type: 'deletePost', id: post.id })}
-          className="clickable" style={{ width: 22, height: 22, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Delete row">
-          <Icon name="more" size={13} color={UI.faint} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PlannerCell({ value, onCommit, editing, onClick, sm, mono, color, w }) {
-  const [v, setV] = React.useState(value);
-  React.useEffect(() => setV(value), [value, editing]);
-  if (editing) {
-    return (
-      <input autoFocus value={v} onChange={(e) => setV(e.target.value)}
-        onBlur={() => onCommit(v)}
-        onKeyDown={(e) => { if (e.key === 'Enter') onCommit(v); if (e.key === 'Escape') onCommit(value); }}
-        style={{
-          padding: '4px 8px', border: `1.5px solid ${UI.accent}`, outline: 'none', background: UI.panel,
-          fontSize: sm ? 12 : 13, fontFamily: mono ? UI.mono : UI.font,
-          borderRight: `1px solid ${UI.line2}`, width: '100%',
-        }} />
-    );
-  }
-  return (
-    <div onClick={onClick} className="clickable" style={{
-      padding: '8px 10px', borderRight: `1px solid ${UI.line2}`,
-      fontSize: sm ? 12 : 13, fontFamily: mono ? UI.mono : UI.font, color: color || UI.ink,
-      cursor: 'pointer', display: 'flex', alignItems: 'center',
-    }}>{value}</div>
-  );
-}
-
-function PlannerTopicCell({ post, topics, dispatch }) {
-  const [open, setOpen] = React.useState(false);
-  const ref = React.useRef(null);
-  React.useEffect(() => {
-    if (!open) return;
-    const off = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
-    document.addEventListener('pointerdown', off, true);
-    return () => document.removeEventListener('pointerdown', off, true);
-  }, [open]);
-  return (
-    <div ref={ref} style={{ padding: '6px 10px', borderRight: `1px solid ${UI.line2}`, position: 'relative', display: 'flex', alignItems: 'center' }}>
-      <button onClick={() => setOpen(!open)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-        <TopicChip topicId={post.topicId} size="sm" />
-        <Icon name="chevdown" size={10} color={UI.faint} />
-      </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 8, zIndex: 5, marginTop: 4,
-          background: UI.panel, border: `1px solid ${UI.line}`, borderRadius: 6,
-          boxShadow: '0 8px 24px rgba(0,0,0,.12)', padding: 4, minWidth: 160,
-        }}>
-          {topics.map(t => (
-            <button key={t.id} onClick={() => { dispatch({ type: 'updatePost', id: post.id, patch: { topicId: t.id } }); setOpen(false); }}
-              className="clickable"
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', width: '100%', borderRadius: 4, fontSize: 12.5, textAlign: 'left' }}>
-              <TopicChip topicId={t.id} size="sm" />
-              {post.topicId === t.id && <Icon name="check" size={12} color={UI.ok} style={{ marginLeft: 'auto' }} />}
-            </button>
+    <div className="scroll" style={{ flex: 1, overflow: 'auto', background: UI.panel }}>
+      <div style={{ position: 'sticky', top: 0, zIndex: 4 }}>
+        {/* group header — VIDEOS | PICTURES, divider aligned to the column grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: PCOLS, borderBottom: `1px solid ${UI.line2}` }}>
+          <div style={{ gridColumn: '1 / 6', padding: '7px 12px', fontSize: 11, fontWeight: 700, letterSpacing: 0.7,
+            textTransform: 'uppercase', color: UI.topic.business.c, background: UI.topic.business.bg,
+            display: 'flex', alignItems: 'center', gap: 6, borderRight: `2px solid ${UI.lineStrong}` }}>
+            <Icon name="video" size={12} /> Videos — left
+          </div>
+          <div style={{ gridColumn: '6 / 11', padding: '7px 12px', fontSize: 11, fontWeight: 700, letterSpacing: 0.7,
+            textTransform: 'uppercase', color: UI.topic.meditation.c, background: UI.topic.meditation.bg,
+            display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Icon name="image" size={12} /> Pictures — right
+          </div>
+        </div>
+        {/* column header */}
+        <div style={{ display: 'grid', gridTemplateColumns: PCOLS, background: UI.panel2,
+          borderBottom: `1px solid ${UI.line}`, fontSize: 10.5, color: UI.muted,
+          fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          {colHead.map((h, i) => (
+            <div key={i} style={{ padding: '7px 12px',
+              borderRight: i === 4 ? `2px solid ${UI.lineStrong}` : (i < 9 ? `1px solid ${UI.line2}` : 'none') }}>{h}</div>
           ))}
         </div>
-      )}
+      </div>
+
+      {rows.map(r => <PlannerRow key={r.id} row={r} driveLink={driveLink} dispatch={dispatch} />)}
+
+      <button onClick={() => dispatch({ type: 'addPlannerRow' })} className="row-hover" style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '11px 14px', width: '100%',
+        fontSize: 12.5, color: UI.muted, textAlign: 'left', borderBottom: `1px solid ${UI.line2}`,
+      }}>
+        <Icon name="plus" size={14} /> Add a planner row
+      </button>
     </div>
   );
 }
 
-// ─── Asset picker popover ─────────────────────────────────────
-function AssetPickerPopover({ post, rect, onPick, onClose }) {
-  const { state } = useStore();
-  const [q, setQ] = React.useState('');
-  const [filterUnused, setFilterUnused] = React.useState(true);
-  const [filterTopic, setFilterTopic] = React.useState(true);
-  const usedIds = new Set(state.posts.filter(p => p.assetId && p.id !== post.id).map(p => p.assetId));
+function PlannerRow({ row, driveLink, dispatch }) {
+  const v = row.video || {};
+  const p = row.picture || {};
+  const vlink = driveLink(v.title);
+  const plink = p.attachment ? driveLink(p.attachment) : null;
+  const base = { padding: '7px 10px', borderRight: `1px solid ${UI.line2}`, minWidth: 0 };
+  const set = (side, field, value) => dispatch({ type: 'updatePlannerCell', id: row.id, side, field, value });
 
-  let candidates = state.assets;
-  if (post.type) candidates = candidates.filter(a => a.type === post.type);
-  if (filterTopic) candidates = candidates.filter(a => a.topic === post.topicId);
-  if (filterUnused) candidates = candidates.filter(a => !usedIds.has(a.id));
-  if (q) candidates = candidates.filter(a => a.title.toLowerCase().includes(q.toLowerCase()) || a.filename.toLowerCase().includes(q.toLowerCase()));
-  candidates = candidates.slice(0, 60);
-
-  const ref = React.useRef(null);
-  React.useEffect(() => {
-    const onClick = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('pointerdown', onClick, true);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('pointerdown', onClick, true); document.removeEventListener('keydown', onKey); };
-  }, [onClose]);
-
-  const left = Math.min((rect?.left || 200), window.innerWidth - 460);
-  const top = Math.min((rect?.bottom || 200) + 4, window.innerHeight - 360);
-
-  return ReactDOM.createPortal(
-    <div ref={ref} className="pop-in" style={{
-      position: 'fixed', top, left, width: 440, zIndex: 70,
-      background: UI.panel, border: `1px solid ${UI.line}`, borderRadius: 8,
-      boxShadow: '0 16px 40px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', maxHeight: 360,
+  return (
+    <div className="row-hover" style={{
+      display: 'grid', gridTemplateColumns: PCOLS, alignItems: 'stretch',
+      borderBottom: `1px solid ${UI.line2}`,
+      background: row.posted ? UI.panel2 : UI.panel,
     }}>
-      <div style={{ padding: '10px 12px', borderBottom: `1px solid ${UI.line2}`, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Icon name="search" size={13} color={UI.muted} />
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search asset library…" style={{
-          flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 13,
-        }} />
+      {/* # */}
+      <div className="mono" style={{ ...base, fontSize: 11, color: UI.faint, display: 'flex', alignItems: 'center' }}>{row.n}</div>
+
+      {/* video title + Drive link */}
+      <div style={{ ...base, display: 'flex', alignItems: 'center', gap: 5 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <EditableText value={v.title} placeholder="video title…"
+            onCommit={(val) => set('video', 'title', val)} />
+        </div>
+        {(v.title || '').trim() && (vlink
+          ? <a href={vlink} target="_blank" rel="noreferrer" title="Open video in Google Drive"
+              style={{ flexShrink: 0, display: 'inline-flex', color: UI.info }}><Icon name="external" size={13} /></a>
+          : <span title="No matching Drive file" style={{ flexShrink: 0, display: 'inline-flex', color: UI.faint }}><Icon name="drive" size={12} /></span>)}
       </div>
-      <div style={{ padding: '6px 12px', borderBottom: `1px solid ${UI.line2}`, display: 'flex', gap: 6, fontSize: 11, background: UI.panel2 }}>
-        <button onClick={() => setFilterTopic(!filterTopic)}>
-          <Pill tone={filterTopic ? 'accent' : 'ghost'} size="sm">topic: {post.topicId}</Pill>
+
+      {/* video caption */}
+      <CaptionCell row={row} side="video" field="text" kind="video-text" dispatch={dispatch} />
+
+      {/* video date/time */}
+      <div style={{ ...base, display: 'flex', alignItems: 'center' }}>
+        <DateCell value={v.dateTime} onCommit={(val) => set('video', 'dateTime', val)} />
+      </div>
+
+      {/* Planable flag (sheet column D) */}
+      <div style={{ ...base, borderRight: `2px solid ${UI.lineStrong}`, display: 'flex', alignItems: 'center' }}>
+        <PlanableFlag row={row} dispatch={dispatch} />
+      </div>
+
+      {/* picture attachment */}
+      <div style={{ ...base, display: 'flex', alignItems: 'center', gap: 5 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <EditableText value={p.attachment} placeholder="attachment…" mono
+            onCommit={(val) => set('picture', 'attachment', val)} />
+        </div>
+        {plink && <a href={plink} target="_blank" rel="noreferrer" title="Open picture in Google Drive"
+          style={{ flexShrink: 0, display: 'inline-flex', color: UI.info }}><Icon name="external" size={12} /></a>}
+      </div>
+
+      {/* picture description */}
+      <CaptionCell row={row} side="picture" field="description" kind="pic-description" dispatch={dispatch} />
+
+      {/* picture quote */}
+      <CaptionCell row={row} side="picture" field="quote" kind="pic-quote" dispatch={dispatch} mono />
+
+      {/* picture date/time */}
+      <div style={{ ...base, display: 'flex', alignItems: 'center' }}>
+        <DateCell value={p.dateTime} onCommit={(val) => set('picture', 'dateTime', val)} />
+      </div>
+
+      {/* delete */}
+      <div style={{ padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <button onClick={() => dispatch({ type: 'deletePlannerRow', id: row.id })}
+          className="clickable" title="Delete row"
+          style={{ width: 22, height: 22, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="trash" size={12} color={UI.faint} />
         </button>
-        <button onClick={() => setFilterUnused(!filterUnused)}>
-          <Pill tone={filterUnused ? 'accent' : 'ghost'} size="sm">unused only</Pill>
-        </button>
-        <div style={{ flex: 1 }} />
-        <span style={{ color: UI.muted }}>{candidates.length} matches</span>
       </div>
-      <div className="scroll" style={{ flex: 1, overflow: 'auto' }}>
-        {candidates.map((a, i) => (
-          <button key={a.id} onClick={() => onPick(a.id, { applyTopic: !filterTopic })} className="row-hover"
-            style={{
-              display: 'grid', gridTemplateColumns: '36px 1fr 90px 70px',
-              gap: 8, padding: '7px 12px', alignItems: 'center', width: '100%',
-              borderBottom: i < candidates.length - 1 ? `1px solid ${UI.line2}` : 'none',
-              textAlign: 'left', fontSize: 12,
-            }}>
-            <MediaThumb asset={a} size={30} />
-            <div className="truncate mono" style={{ fontSize: 11 }}>{a.filename}</div>
-            <TopicChip topicId={a.topic} size="sm" />
-            <span style={{ fontSize: 10.5, color: usedIds.has(a.id) ? UI.muted : UI.ok, textAlign: 'right' }}>
-              {usedIds.has(a.id) ? 'used' : 'available'}
-            </span>
-          </button>
-        ))}
-        {candidates.length === 0 && <Empty title="No matches" desc="Try unchecking a filter or search differently." />}
-      </div>
-      <div style={{ padding: '6px 12px', borderTop: `1px solid ${UI.line2}`, background: UI.panel2, display: 'flex', gap: 10, fontSize: 11, color: UI.muted, alignItems: 'center' }}>
-        <span>↑↓ navigate</span><span>↵ select</span><span>esc cancel</span>
-        <div style={{ flex: 1 }} />
-        <button style={{ color: UI.accent, fontWeight: 600 }}>+ Upload new</button>
-      </div>
-    </div>, document.body);
+    </div>
+  );
 }
 
-// ─── Pattern + Topic panels & helpers continue in next file ───
-function addRow(state, dispatch, toast) {
-  // find next date after last post
-  const lastDate = state.posts.map(p => p.date).sort().pop() || window.DATA.iso(window.DATA.TODAY);
-  const nextDate = window.DATA.iso(window.DATA.addDays(new Date(lastDate + 'T00:00:00'), 1));
-  // pick alternating topic based on last post for the same slot
-  const lastSlotPosts = state.posts.filter(p => p.slotId === state.pattern.slots[0].id);
-  const prevTopic = lastSlotPosts.length ? lastSlotPosts.sort((a, b) => a.date.localeCompare(b.date)).pop().topicId : 'business';
-  const nextTopic = prevTopic === 'business' ? 'meditation' : 'business';
-  const slot = state.pattern.slots[0];
-  const id = 'p' + (Date.now()).toString(36);
-  dispatch({ type: 'addPost', post: {
-    id, date: nextDate, time: slot.time, slotId: slot.id, assetId: null, type: slot.mediaType,
-    topicId: nextTopic, captionStatus: 'empty', captionText: '', captionVersions: [],
-    exportStatus: 'not', exportedAt: null, notes: '',
-  }});
-  toast(`Added row · ${fmtDate(nextDate)} · ${nextTopic}`, 'ok');
+// A caption / description / quote cell — always editable; shows a Generate
+// button (an LLM target) while it is empty.
+function CaptionCell({ row, side, field, kind, mono, dispatch }) {
+  const value = ((row[side] || {})[field]) || '';
+  const has = value.trim();
+  return (
+    <div style={{ padding: '7px 10px', borderRight: `1px solid ${UI.line2}`, minWidth: 0 }}>
+      <EditableText value={value} multiline mono={mono} placeholder="empty"
+        onCommit={(val) => dispatch({ type: 'updatePlannerCell', id: row.id, side, field, value: val })} />
+      {!has && <GenerateButton kind={kind} row={row} side={side} field={field} dispatch={dispatch} />}
+    </div>
+  );
+}
+
+const KIND_LABEL = { 'video-text': 'caption', 'pic-description': 'description', 'pic-quote': 'quote' };
+
+// LLM affordance for an empty cell. Calls /api/generate-caption, writes the
+// result straight into the planner row.
+function GenerateButton({ kind, row, side, field, dispatch }) {
+  const { state, toast } = useStore();
+  const [busy, setBusy] = React.useState(false);
+
+  const gen = async () => {
+    setBusy(true);
+    try {
+      const rows = state.planner || [];
+      const pick = (sel) => rows.map(sel).filter(t => t && String(t).trim()).slice(0, 6);
+      let samples = [];
+      if (kind === 'video-text') samples = pick(r => r.video && r.video.text);
+      else if (kind === 'pic-description') samples = pick(r => r.picture && r.picture.description);
+      else samples = pick(r => r.picture && r.picture.quote);
+      const res = await fetch('/api/generate-caption', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind,
+          title: (row.video && row.video.title) || (row.picture && row.picture.attachment) || '',
+          samples,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        dispatch({ type: 'updatePlannerCell', id: row.id, side, field, value: data.text });
+        toast('Caption generated', 'ok');
+      } else {
+        setBusy(false);
+        toast(data.error || 'Generation unavailable', 'accent');
+      }
+    } catch (e) { setBusy(false); toast('Generation failed: ' + e.message, 'accent'); }
+  };
+
+  return (
+    <button onClick={gen} disabled={busy} className="focus-ring" style={{
+      marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px',
+      borderRadius: 4, fontSize: 10.5, fontWeight: 500,
+      background: busy ? UI.panel3 : UI.accentBg, color: UI.accentInk,
+      border: 'none', cursor: busy ? 'default' : 'pointer',
+    }} title={`Generate a ${KIND_LABEL[kind] || 'caption'} with the LLM`}>
+      <span className={busy ? 'spin' : ''} style={{ display: 'inline-flex' }}><Icon name="sparkles" size={10} /></span>
+      {busy ? 'Generating…' : 'Generate'}
+    </button>
+  );
+}
+
+// Click-to-edit text cell — single line by default, multiline for captions.
+function EditableText({ value, onCommit, multiline, mono, placeholder, clamp = 3 }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(value || '');
+  React.useEffect(() => { if (!editing) setDraft(value || ''); }, [value, editing]);
+
+  const commit = () => { setEditing(false); if (draft !== (value || '')) onCommit(draft); };
+  const cancel = () => { setDraft(value || ''); setEditing(false); };
+
+  if (editing) {
+    const sharedStyle = {
+      width: '100%', border: `1.5px solid ${UI.accent}`, borderRadius: 4, outline: 'none',
+      padding: '5px 7px', fontSize: 11.5, lineHeight: 1.42,
+      fontFamily: mono ? UI.mono : UI.font, color: UI.ink, background: UI.panel,
+    };
+    if (multiline) {
+      return <textarea autoFocus value={draft} rows={5}
+        onChange={(e) => setDraft(e.target.value)} onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Escape') cancel(); }}
+        style={{ ...sharedStyle, resize: 'vertical' }} />;
+    }
+    return <input autoFocus value={draft}
+      onChange={(e) => setDraft(e.target.value)} onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') cancel(); }}
+      style={sharedStyle} />;
+  }
+
+  const has = value && String(value).trim();
+  return (
+    <div onClick={() => setEditing(true)} style={{
+      cursor: 'text', minHeight: 18, fontSize: 11.5, lineHeight: 1.42,
+      fontFamily: mono ? UI.mono : UI.font, color: has ? UI.ink : UI.faint,
+      ...(multiline
+        ? { display: '-webkit-box', WebkitLineClamp: clamp, WebkitBoxOrient: 'vertical', overflow: 'hidden' }
+        : { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }),
+    }} title={has ? value : ''}>
+      {has ? value : <span style={{ fontStyle: 'italic' }}>{placeholder || '—'}</span>}
+    </div>
+  );
+}
+
+function DateCell({ value, onCommit }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(value || '');
+  React.useEffect(() => { if (!editing) setDraft(value || ''); }, [value, editing]);
+  const commit = () => { setEditing(false); if (draft !== (value || '')) onCommit(draft); };
+
+  if (editing) {
+    return <input autoFocus value={draft} placeholder="YYYY-MM-DD HH:MM"
+      onChange={(e) => setDraft(e.target.value)} onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setDraft(value || ''); setEditing(false); } }}
+      style={{ width: '100%', border: `1.5px solid ${UI.accent}`, borderRadius: 4, outline: 'none',
+        padding: '4px 6px', fontSize: 10.5, fontFamily: UI.mono, color: UI.ink, background: UI.panel }} />;
+  }
+  const parts = String(value || '').split(' ');
+  const d = parts[0], t = parts[1];
+  return (
+    <div onClick={() => setEditing(true)} className="mono" style={{ cursor: 'text', fontSize: 11, lineHeight: 1.3, width: '100%' }}>
+      <div style={{ color: d ? UI.ink : UI.faint }}>{d || '—'}</div>
+      {t && <div style={{ color: UI.muted, fontSize: 10.5 }}>{t.slice(0, 5)}</div>}
+    </div>
+  );
+}
+
+function PlanableFlag({ row, dispatch }) {
+  const onClick = () => dispatch({ type: 'cyclePosted', id: row.id });
+  let pill;
+  if (row.posted) pill = <Pill tone="ok" size="sm" icon={<Icon name="check" size={10} />}>on Planable</Pill>;
+  else if ((row.postedRaw || '').toLowerCase() === 'na') pill = <Pill tone="ghost" size="sm">n/a</Pill>;
+  else pill = <Pill tone="warn" size="sm">pending</Pill>;
+  return <button onClick={onClick} title="Click to change Planable status" style={{ cursor: 'pointer' }}>{pill}</button>;
 }
 
 Object.assign(window, { Planner });

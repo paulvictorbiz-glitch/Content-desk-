@@ -28,18 +28,11 @@ REM Get the folder where this bat file lives
 set ROOT=%~dp0
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
-REM Check if serve is installed globally
-npx -y serve --version >nul 2>&1
-if errorlevel 1 (
-    echo [WARNING] 'serve' package not found. Installing...
-    npm install -g serve
-)
-
 echo [INFO] Starting Content Desk on http://localhost:3000
 echo.
 echo        (Does NOT conflict with Ziflow :8000 or Footage Brain :8765)
 echo.
 
-REM Start the server using Node.js
-REM (Don't pause - let the window stay open to show server output)
+REM Start the server using Node.js (only needs built-in modules — no npm install)
+REM The window stays open to show server output.
 node "%ROOT%\server.js"

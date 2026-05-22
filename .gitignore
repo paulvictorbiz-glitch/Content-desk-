@@ -3,3 +3,11 @@ dist/
 .env
 .DS_Store
 *.log
+
+# Drive sync — OAuth secrets, never commit
+drive-sync/credentials.json
+drive-sync/token.json
+# Generated data (regenerate with drive-sync/*.py)
+app/drive-assets.js
+app/planner-data.js
+drive-sync/_ref-sheet.xlsx

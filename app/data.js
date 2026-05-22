@@ -15,6 +15,8 @@
       desc: 'Tai chi, presence, contemplative observations', emoji: '◇' },
     { id: 'martial-arts', name: 'Martial arts', color: '#6f8a4a', accent: 'olive', promptKey: 'martial',
       desc: 'Kung fu form, training discipline, lineage', emoji: '◈' },
+    { id: 'neutral', name: 'Neutral', color: '#7a756d', accent: 'gray', promptKey: 'neutral',
+      desc: 'Untagged — needs a manual topic assignment', emoji: '○' },
   ];
 
   // ─── Posting pattern ──────────────────────────────────────────
@@ -94,22 +96,129 @@
     return slug + ext;
   };
 
-  const assets = assetSeed.map((s, i) => ({
-    id: 'a' + (i + 1).toString().padStart(3, '0'),
-    title: s[0],
-    filename: filenameFor(s[0], s[1], i),
-    type: s[1],
-    topic: s[2],
-    client: 'nikky-kho',
-    driveId: '1' + Math.random().toString(36).slice(2, 12) + 'k',
-    driveFolder: `Nikky/${s[1] === 'video' ? 'Videos' : 'Pictures'}/${s[2]}`,
-    sizeBytes: s[1] === 'video' ? 8e6 + Math.floor(Math.random() * 25e6) : 1.2e6 + Math.floor(Math.random() * 3e6),
-    durationSec: s[1] === 'video' ? 30 + Math.floor(Math.random() * 90) : null,
-    uploadedAt: iso(addDays(TODAY, s[3])) + 'T' + (8 + i % 8) + ':' + (10 + (i * 7) % 50) + ':00',
-    driveStatus: i === 5 ? 'pending' : 'synced',
-    isNew: s[3] >= -1, // uploaded in last 2 days
-    sourceQuote: null,
-  }));
+  // Best-effort topic from a real filename. Drive folders are organised by
+  // media type, not topic, so the only signal is the name itself.
+  // No keyword match → 'neutral' (e.g. IMG_1234.JPG) — these surface in the
+  // UI for the user to tag manually.
+  const TOPIC_KEYWORDS = {
+    'martial-arts': ['kung fu', 'kungfu', 'martial', 'wushu', 'shaolin'],
+    meditation: ['meditat', 'stillness', 'mindful', 'presence', 'breath', 'yoga',
+      'tai chi', 'taichi', 'conscious', 'healing', 'prayer', 'enlighten',
+      'spiritual', 'silence', 'serene', 'gratitude', 'peace', 'soul',
+      'wisdom', ' calm', ' nature'],
+    business: ['ai ', ' ai', 'a.i', 'business', 'agent', 'automat', 'marketing',
+      'sales', 'revenue', 'growth', 'leader', 'entrepreneur', 'money', 'brand',
+      'website', 'chatbot', 'profit', 'customer', 'strategy', 'scale', 'startup',
+      'invest', 'ceo', 'client', 'company', 'productiv', 'hustle', 'income',
+      'workflow', 'saas', 'funnel', 'lead'],
+  };
+  const topicFor = (name) => {
+    const s = ' ' + (name || '').toLowerCase() + ' ';
+    for (const topic of Object.keys(TOPIC_KEYWORDS)) {
+      if (TOPIC_KEYWORDS[topic].some((w) => s.includes(w))) return topic;
+    }
+    return 'neutral';
+  };
+  const titleFor = (filename) =>
+    filename.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/_+/g, ' ').replace(/\s+/g, ' ').trim()
+    || filename;
+
+  // A date in the filename (month / day / year) means the asset has already
+  // been organised/posted. Returns an ISO date string, or null.
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7,
+    aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  const detectPostedDate = (filename) => {
+    const s = filename || '';
+    let m = s.match(/(20\d{2})[._\- ](0?[1-9]|1[0-2])[._\- ](0?[1-9]|[12]\d|3[01])(?!\d)/);
+    if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+    m = s.match(/(?<!\d)(0?[1-9]|1[0-2])[._\-/](0?[1-9]|[12]\d|3[01])[._\-/](20\d{2})(?!\d)/);
+    if (m) return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+    m = s.toLowerCase().match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[ _\-]+(\d{1,2})(?:st|nd|rd|th)?,?[ _\-]+(20\d{2})\b/);
+    if (m && MONTHS[m[1]]) return `${m[3]}-${pad2(MONTHS[m[1]])}-${pad2(m[2])}`;
+    m = s.match(/(?<!\d)(0?[1-9]|1[0-2])[._\-/](0?[1-9]|[12]\d|3[01])[._\-/](2\d)(?!\d)/);
+    if (m) return `20${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+    return null;
+  };
+
+  // Manual topic tags persist in localStorage, keyed by Drive ID so they
+  // survive a re-sync. window.CDPrefs is also used by the tagging UI.
+  const PREFS_KEY = 'cd_topic_overrides';
+  const readOverrides = () => {
+    try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; }
+    catch (e) { return {}; }
+  };
+  const writeOverrides = (o) => {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(o)); } catch (e) {}
+  };
+  if (typeof window !== 'undefined') {
+    window.CDPrefs = {
+      getTopicOverrides: readOverrides,
+      setTopicOverrides(driveIds, topic) {
+        const o = readOverrides();
+        driveIds.forEach((d) => { if (d) o[d] = topic; });
+        writeOverrides(o);
+      },
+      clearTopicOverrides() { writeOverrides({}); },
+    };
+  }
+  const overrides = (typeof localStorage !== 'undefined') ? readOverrides() : {};
+
+  // Real Google Drive metadata when synced (drive-sync/sync.py writes
+  // window.DRIVE_ASSETS); otherwise the demo seed above.
+  const DRIVE = (typeof window !== 'undefined' && Array.isArray(window.DRIVE_ASSETS) && window.DRIVE_ASSETS.length)
+    ? window.DRIVE_ASSETS : null;
+
+  const assets = DRIVE
+    ? DRIVE.map((d, i) => {
+        const raw = (d.createdTime || d.modifiedTime || iso(TODAY) + 'T00:00:00')
+          .replace('Z', '').slice(0, 19);
+        // Guarantee at least "YYYY-MM-DDTHH:MM" — the UI slices [11,16].
+        const uploadedAt = raw.length >= 16 ? raw : iso(TODAY) + 'T00:00:00';
+        const ageDays = Math.round((TODAY - new Date(uploadedAt)) / 86400000);
+        const postedDate = detectPostedDate(d.filename);
+        return {
+          id: 'a' + (i + 1).toString().padStart(4, '0'),
+          title: titleFor(d.filename || 'Untitled'),
+          filename: d.filename || 'untitled',
+          type: d.type === 'image' ? 'image' : 'video',
+          topic: overrides[d.driveId] || topicFor(d.filename),
+          client: 'nikky-kho',
+          driveId: d.driveId || '',
+          driveFolder: d.driveFolder || '',
+          sizeBytes: d.sizeBytes || 0,
+          durationSec: null,
+          uploadedAt,
+          webViewLink: d.webViewLink || null,
+          driveStatus: 'synced',
+          isNew: ageDays >= 0 && ageDays <= 2,
+          posted: !!postedDate,
+          postedDate,
+          sourceQuote: null,
+        };
+      })
+    : assetSeed.map((s, i) => {
+        const filename = filenameFor(s[0], s[1], i);
+        const postedDate = detectPostedDate(filename);
+        return {
+          id: 'a' + (i + 1).toString().padStart(3, '0'),
+          title: s[0],
+          filename,
+          type: s[1],
+          topic: s[2],
+          client: 'nikky-kho',
+          driveId: '1' + Math.random().toString(36).slice(2, 12) + 'k',
+          driveFolder: `Nikky/${s[1] === 'video' ? 'Videos' : 'Pictures'}/${s[2]}`,
+          sizeBytes: s[1] === 'video' ? 8e6 + Math.floor(Math.random() * 25e6) : 1.2e6 + Math.floor(Math.random() * 3e6),
+          durationSec: s[1] === 'video' ? 30 + Math.floor(Math.random() * 90) : null,
+          uploadedAt: iso(addDays(TODAY, s[3])) + 'T' + (8 + i % 8) + ':' + (10 + (i * 7) % 50) + ':00',
+          driveStatus: i === 5 ? 'pending' : 'synced',
+          isNew: s[3] >= -1, // uploaded in last 2 days
+          posted: !!postedDate,
+          postedDate,
+          sourceQuote: null,
+        };
+      });
 
   // ─── Caption snippets (mirrors the sheet's voice) ─────────────
   const captionsByTopic = {

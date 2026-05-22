@@ -27,6 +27,50 @@ function reducer(state, action) {
     case 'addAssets': {
       return { ...state, assets: [...action.assets, ...state.assets] };
     }
+    case 'bulkSetTopic': {
+      const ids = new Set(action.ids);
+      const assets = state.assets.map(a => ids.has(a.id) ? { ...a, topic: action.topic } : a);
+      return { ...state, assets };
+    }
+    case 'setPlanner': {
+      return { ...state, planner: action.planner };
+    }
+    case 'updatePlannerCell': {
+      const planner = state.planner.map(r => {
+        if (r.id !== action.id) return r;
+        const cur = r[action.side] || {};
+        return { ...r, [action.side]: { ...cur, [action.field]: action.value } };
+      });
+      return { ...state, planner };
+    }
+    case 'cyclePosted': {
+      const planner = state.planner.map(r => {
+        if (r.id !== action.id) return r;
+        if (r.posted) return { ...r, posted: false, postedRaw: 'NA' };
+        if ((r.postedRaw || '').toLowerCase() === 'na') return { ...r, posted: false, postedRaw: '' };
+        return { ...r, posted: true, postedRaw: '1' };
+      });
+      return { ...state, planner };
+    }
+    case 'addPlannerRow': {
+      const row = {
+        id: 'pl' + Date.now().toString(36),
+        n: state.planner.length + 1, sheetRow: null,
+        video: { title: '', text: '', dateTime: '' },
+        picture: { description: '', quote: '', dateTime: '', attachment: '' },
+        posted: false, postedRaw: '',
+      };
+      return { ...state, planner: [...state.planner, row] };
+    }
+    case 'deletePlannerRow': {
+      const planner = state.planner.filter(r => r.id !== action.id).map((r, i) => ({ ...r, n: i + 1 }));
+      return { ...state, planner };
+    }
+    case 'markPlannerPosted': {
+      const ids = new Set(action.ids);
+      const planner = state.planner.map(r => ids.has(r.id) ? { ...r, posted: true, postedRaw: '1' } : r);
+      return { ...state, planner };
+    }
     case 'addTopic': {
       return { ...state, topics: [...state.topics, action.topic] };
     }
@@ -68,13 +112,32 @@ function reducer(state, action) {
   }
 }
 
+// ─── localStorage persistence ─────────────────────────────────
+function loadJSON(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
+}
+function saveJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+function loadPlanner() {
+  const saved = loadJSON('cd_planner');
+  const base = (Array.isArray(saved) && saved.length) ? saved
+    : (Array.isArray(window.PLANNER_ROWS) ? window.PLANNER_ROWS : []);
+  return base.map((r, i) => ({ id: r.id || ('pl' + (r.sheetRow != null ? r.sheetRow : i)), ...r }));
+}
+function loadSettings() {
+  const saved = loadJSON('cd_settings');
+  return saved && typeof saved === 'object' ? { ...window.DATA.settings, ...saved } : window.DATA.settings;
+}
+
 function StateProvider({ children }) {
   const initial = React.useMemo(() => ({
     topics: window.DATA.topics,
     pattern: window.DATA.pattern,
     assets: window.DATA.assets,
     posts: window.DATA.posts,
-    settings: window.DATA.settings,
+    planner: loadPlanner(),
+    settings: loadSettings(),
     activity: window.DATA.activity,
     toast: null,
   }), []);
@@ -86,6 +149,10 @@ function StateProvider({ children }) {
     const t = setTimeout(() => dispatch({ type: 'toast', toast: null }), 3200);
     return () => clearTimeout(t);
   }, [state.toast]);
+
+  // Persist planner + settings edits across reloads.
+  React.useEffect(() => { saveJSON('cd_planner', state.planner); }, [state.planner]);
+  React.useEffect(() => { saveJSON('cd_settings', state.settings); }, [state.settings]);
 
   const api = React.useMemo(() => ({ state, dispatch,
     toast: (text, tone) => dispatch({ type: 'toast', toast: { text, tone, ts: Date.now() } }),

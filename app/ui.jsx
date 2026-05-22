@@ -27,6 +27,7 @@ const UI = {
     business:   { c: '#a04020', bg: '#f7e3da' },
     meditation: { c: '#3f5a72', bg: '#dfe7ee' },
     'martial-arts': { c: '#4d6b34', bg: '#e3ecd9' },
+    neutral:    { c: '#7a756d', bg: '#ece9e2' },
   },
   font: '"Inter Tight", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif',
   mono: '"JetBrains Mono", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace',

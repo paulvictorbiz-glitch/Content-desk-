@@ -114,17 +114,30 @@ function NavBar({ active }) {
   );
 }
 
+// Empty caption cells across the planner.
+function emptyCaptionCount(planner) {
+  return planner.reduce((n, r) => {
+    let c = 0;
+    const v = r.video || {}, p = r.picture || {};
+    if ((v.title || '').trim() && !(v.text || '').trim()) c++;
+    const hasPic = (p.description || '').trim() || (p.quote || '').trim() || (p.attachment || '').trim();
+    if (hasPic && !(p.description || '').trim()) c++;
+    if (hasPic && !(p.quote || '').trim()) c++;
+    return n + c;
+  }, 0);
+}
+function pendingExportCount(planner) {
+  return planner.filter(r => !r.posted && (r.postedRaw || '').toLowerCase() !== 'na').length;
+}
+
 function NavBadge({ tab, active }) {
   const { state } = useStore();
   let count = 0, tone = 'neutral';
   if (tab === 'captions') {
-    count = state.posts.filter(p => p.captionStatus === 'empty' && daysFromToday(p.date) >= -1 && daysFromToday(p.date) < 14).length;
+    count = emptyCaptionCount(state.planner);
     tone = 'accent';
-  } else if (tab === 'planner') {
-    const missing = state.posts.filter(p => !p.assetId && daysFromToday(p.date) >= 0).length;
-    if (missing > 0) { count = missing; tone = 'warn'; }
   } else if (tab === 'export') {
-    count = state.posts.filter(p => p.exportStatus === 'not' && p.captionStatus === 'final').length;
+    count = pendingExportCount(state.planner);
     tone = 'neutral';
   }
   if (!count) return null;
@@ -143,43 +156,38 @@ function AlertsStrip() {
   const { state } = useStore();
   const { go } = useRoute();
 
-  // Compute alerts
+  // Compute alerts from the planner.
   const alerts = [];
-  // Today missing final caption
-  const today = window.DATA.iso(window.DATA.TODAY);
-  const todayPosts = state.posts.filter(p => p.date === today);
-  const todayMissing = todayPosts.filter(p => p.captionStatus !== 'final');
-  if (todayMissing.length > 0) {
+  const emptyCaps = emptyCaptionCount(state.planner);
+  if (emptyCaps > 0) {
     alerts.push({
       tone: 'accent',
-      icon: <Icon name="warning" size={13} />,
-      text: <><b style={{ color: UI.accentInk, fontWeight: 600 }}>{todayMissing.length} post{todayMissing.length === 1 ? '' : 's'} today</b> without a final caption</>,
+      icon: <Icon name="sparkles" size={13} />,
+      text: <><b style={{ color: UI.accentInk, fontWeight: 600 }}>{emptyCaps} caption cell{emptyCaps === 1 ? '' : 's'}</b> empty — the LLM can fill them</>,
       cta: 'Open in Captions',
-      onClick: () => go({ tab: 'captions', query: { status: 'empty,draft', date: 'today' } }),
+      onClick: () => go({ tab: 'captions' }),
     });
   }
 
-  // Missing asset slots within next 14 days
-  const upcomingMissing = state.posts.filter(p => !p.assetId && daysFromToday(p.date) >= 0 && daysFromToday(p.date) <= 14);
-  if (upcomingMissing.length > 0) {
+  const pendingExport = pendingExportCount(state.planner);
+  if (pendingExport > 0) {
     alerts.push({
       tone: 'warn',
-      icon: <Icon name="warning" size={13} />,
-      text: <><b style={{ color: UI.warn, fontWeight: 600 }}>{upcomingMissing.length} slot{upcomingMissing.length === 1 ? '' : 's'}</b> in next 14 days missing an asset</>,
-      cta: 'Open in Planner',
-      onClick: () => go({ tab: 'planner', query: { filter: 'missing-asset' } }),
+      icon: <Icon name="exporticon" size={13} />,
+      text: <><b style={{ color: UI.warn, fontWeight: 600 }}>{pendingExport} row{pendingExport === 1 ? '' : 's'}</b> not yet on Planable</>,
+      cta: 'Open in Export',
+      onClick: () => go({ tab: 'export' }),
     });
   }
 
-  // Pending drive uploads
-  const pending = state.assets.filter(a => a.driveStatus === 'pending');
-  if (pending.length > 0) {
+  const toTag = state.assets.filter(a => a.topic === 'neutral' && !a.posted).length;
+  if (toTag > 0) {
     alerts.push({
       tone: 'info',
-      icon: <Icon name="drive" size={13} />,
-      text: <><b style={{ color: UI.info, fontWeight: 600 }}>{pending.length}</b> asset{pending.length === 1 ? '' : 's'} not yet synced to Drive</>,
-      cta: 'Retry sync',
-      onClick: () => {},
+      icon: <Icon name="assets" size={13} />,
+      text: <><b style={{ color: UI.info, fontWeight: 600 }}>{toTag.toLocaleString()}</b> asset{toTag === 1 ? '' : 's'} need a topic tag</>,
+      cta: 'Open in Assets',
+      onClick: () => go({ tab: 'assets' }),
     });
   }
 

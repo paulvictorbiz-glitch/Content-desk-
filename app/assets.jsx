@@ -1,7 +1,7 @@
 // Assets — library table, upload modal, detail drawer with linked planner rows.
 
 function Assets() {
-  const { state } = useStore();
+  const { state, dispatch, toast } = useStore();
   const { route, go } = useRoute();
   const [filter, setFilter] = React.useState({ type: 'all', topic: 'all', usage: 'all', q: '' });
   const [uploadOpen, setUploadOpen] = React.useState(false);
@@ -18,9 +18,21 @@ function Assets() {
     return m;
   }, [state.posts]);
 
+  // Apply a topic tag to assets and persist it (keyed by Drive ID, survives re-sync).
+  const tagAssets = React.useCallback((ids, topic) => {
+    if (!ids.length) return;
+    dispatch({ type: 'bulkSetTopic', ids, topic });
+    const driveIds = ids.map(id => (state.assets.find(a => a.id === id) || {}).driveId).filter(Boolean);
+    if (window.CDPrefs) window.CDPrefs.setTopicOverrides(driveIds, topic);
+    const tName = (state.topics.find(t => t.id === topic) || {}).name || topic;
+    toast(`Tagged ${ids.length} asset${ids.length > 1 ? 's' : ''} as ${tName}`, 'ok');
+  }, [state.assets, state.topics, dispatch, toast]);
+
   const rows = state.assets.filter(a => {
     if (filter.type !== 'all' && a.type !== filter.type) return false;
     if (filter.topic !== 'all' && a.topic !== filter.topic) return false;
+    if (filter.usage === 'posted' && !a.posted) return false;
+    if (filter.usage === 'unposted' && a.posted) return false;
     if (filter.usage === 'used' && !usedAssetIds.has(a.id)) return false;
     if (filter.usage === 'unused' && usedAssetIds.has(a.id)) return false;
     if (filter.usage === 'new' && !a.isNew) return false;
@@ -30,15 +42,16 @@ function Assets() {
 
   const totals = {
     all: state.assets.length,
+    posted: state.assets.filter(a => a.posted).length,
+    toTag: state.assets.filter(a => a.topic === 'neutral' && !a.posted).length,
     new: state.assets.filter(a => a.isNew).length,
-    used: state.assets.filter(a => usedAssetIds.has(a.id)).length,
-    unused: state.assets.filter(a => !usedAssetIds.has(a.id)).length,
   };
 
   return (
     <>
       <ScreenHeader title="Asset library"
-        sub={`${state.assets.length} assets · ${totals.used} used · ${totals.unused} unused · ${totals.new} new this week`}>
+        sub={`${totals.all} assets · ${totals.posted} posted · ${totals.toTag} to tag · ${totals.new} new this week`}>
+        <ScanButton />
         <Btn kind="ghost" icon={<Icon name="download" size={13} />}>Export CSV</Btn>
         <Btn kind="primary" icon={<Icon name="upload" size={13} />} onClick={() => setUploadOpen(true)}>Upload</Btn>
       </ScreenHeader>
@@ -51,16 +64,16 @@ function Assets() {
         <Select label="Topic" value={filter.topic} onChange={(v) => setFilter({ ...filter, topic: v })}
           options={[['all', 'All'], ...state.topics.map(t => [t.id, t.name])]} />
         <Select label="Usage" value={filter.usage} onChange={(v) => setFilter({ ...filter, usage: v })}
-          options={[['all', 'All'], ['unused', 'Unused only'], ['used', 'Used'], ['new', 'New this week']]} />
+          options={[['all', 'All'], ['posted', 'Posted'], ['unposted', 'Not posted'], ['used', 'Used in planner'], ['unused', 'Unused'], ['new', 'New this week']]} />
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11.5, color: UI.muted }}>{rows.length} of {state.assets.length}</span>
       </Toolbar>
 
       {selected.size > 0 && (
-        <div style={{ padding: '8px 24px', background: UI.ink, color: '#fff', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
+        <div style={{ padding: '8px 24px', background: UI.ink, color: '#fff', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5, flexWrap: 'wrap' }}>
           <span><b>{selected.size}</b> selected</span>
-          <Btn size="sm" kind="soft" style={{ background: 'rgba(255,255,255,.1)', color: '#fff', border: 'none' }}>Bulk re-topic</Btn>
-          <Btn size="sm" kind="soft" style={{ background: 'rgba(255,255,255,.1)', color: '#fff', border: 'none' }}>Link to planner slots…</Btn>
+          <span style={{ color: 'rgba(255,255,255,.5)' }}>Tag as</span>
+          <TopicPicker onDark onPick={(topic) => { tagAssets([...selected], topic); setSelected(new Set()); }} />
           <div style={{ flex: 1 }} />
           <button onClick={() => setSelected(new Set())} style={{ color: 'rgba(255,255,255,.7)', fontSize: 12 }}>Clear</button>
         </div>
@@ -71,8 +84,68 @@ function Assets() {
         onOpen={(id) => go({ tab: 'assets', sub: [id] })} />
 
       <UploadModal open={uploadOpen} onClose={() => setUploadOpen(false)} />
-      <AssetDrawer asset={drawerAsset} onClose={closeDrawer} />
+      <AssetDrawer asset={drawerAsset} onClose={closeDrawer}
+        onTag={(topic) => drawerAsset && tagAssets([drawerAsset.id], topic)} />
     </>
+  );
+}
+
+// Scan/scrape the Drive folder for asset names, then reload with fresh data.
+function ScanButton() {
+  const { toast } = useStore();
+  const [scanning, setScanning] = React.useState(false);
+  const scan = async () => {
+    setScanning(true);
+    toast('Scanning Google Drive — this can take a minute…', 'accent');
+    try {
+      const res = await fetch('/api/scan-drive', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        toast(`Found ${data.count != null ? data.count + ' ' : ''}assets — reloading…`, 'ok');
+        setTimeout(() => window.location.reload(), 1100);
+      } else {
+        setScanning(false);
+        console.error('Drive scan failed:', data.error);
+        toast('Scan failed — check the server window', 'accent');
+      }
+    } catch (e) {
+      setScanning(false);
+      toast('Scan failed: ' + e.message, 'accent');
+    }
+  };
+  return (
+    <Btn kind="ghost" onClick={scanning ? undefined : scan} disabled={scanning}
+      icon={<span className={scanning ? 'spin' : ''} style={{ display: 'inline-flex' }}><Icon name="refresh" size={13} /></span>}>
+      {scanning ? 'Scanning…' : 'Scan Drive'}
+    </Btn>
+  );
+}
+
+// Row of topic buttons — click one to tag. Highlights `value` if given.
+function TopicPicker({ value, onPick, onDark, style }) {
+  const topics = (window.DATA && window.DATA.topics) || [];
+  return (
+    <div style={{ display: 'inline-flex', gap: 5, flexWrap: 'wrap', ...style }}>
+      {topics.map(t => {
+        const active = t.id === value;
+        const pal = UI.topic[t.id] || { c: UI.ink2, bg: UI.panel3 };
+        return (
+          <button key={t.id} className="focus-ring"
+            onClick={(e) => { e.stopPropagation(); onPick(t.id); }}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '3px 9px', borderRadius: 4, fontSize: 11.5, fontWeight: 500,
+              background: active ? pal.bg : (onDark ? 'rgba(255,255,255,.12)' : UI.panel),
+              color: active ? pal.c : (onDark ? '#fff' : UI.ink2),
+              border: `1px solid ${active ? pal.c : (onDark ? 'transparent' : UI.line)}`,
+              cursor: 'pointer', whiteSpace: 'nowrap',
+            }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: pal.c }} />
+            {t.name}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -151,7 +224,9 @@ function AssetTable({ rows, usedAssetIds, useCount, selected, setSelected, onOpe
             <div><TopicChip topicId={a.topic} size="sm" /></div>
             <div className="mono" style={{ fontSize: 11.5, color: UI.muted }}>{a.uploadedAt.slice(0, 10)}</div>
             <div>
-              {used
+              {a.posted
+                ? <Pill tone="ok" size="sm" title={`Posted ${a.postedDate}`}>posted</Pill>
+                : used
                 ? <Pill tone="info" size="sm">{count > 1 ? `used ×${count}` : 'used'}</Pill>
                 : <Pill tone="ghost" size="sm">unused</Pill>}
             </div>
@@ -291,7 +366,7 @@ function UploadModal({ open, onClose }) {
 }
 
 // ─── Asset detail drawer ──────────────────────────────────────
-function AssetDrawer({ asset, onClose }) {
+function AssetDrawer({ asset, onClose, onTag }) {
   const { state } = useStore();
   const { go } = useRoute();
   if (!asset) return null;
@@ -330,10 +405,11 @@ function AssetDrawer({ asset, onClose }) {
         <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: -0.2, marginBottom: 2 }}>{asset.title}</div>
         <div className="mono" style={{ fontSize: 11.5, color: UI.muted, marginBottom: 16 }}>{asset.filename}</div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, fontSize: 12.5 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, fontSize: 12.5, alignItems: 'center' }}>
           <Meta label="Client">Nikky Kho</Meta>
           <Meta label="Type"><Pill tone="soft" size="sm">{asset.type}</Pill></Meta>
-          <Meta label="Topic"><TopicChip topicId={asset.topic} size="sm" /></Meta>
+          <Meta label="Topic"><TopicPicker value={asset.topic} onPick={onTag} /></Meta>
+          {asset.posted && <Meta label="Posted"><Pill tone="ok" size="sm">{asset.postedDate}</Pill></Meta>}
           <Meta label="Uploaded">{fmtDate(asset.uploadedAt.slice(0, 10))} · {asset.uploadedAt.slice(11, 16)}</Meta>
           {asset.durationSec && <Meta label="Duration">{(asset.sizeBytes / 1e6).toFixed(1)} MB · {Math.floor(asset.durationSec/60)}:{(asset.durationSec%60).toString().padStart(2,'0')}</Meta>}
           {!asset.durationSec && <Meta label="Size">{(asset.sizeBytes / 1e6).toFixed(2)} MB</Meta>}

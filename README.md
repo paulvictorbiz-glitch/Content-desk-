@@ -14,19 +14,33 @@ Opens at **http://localhost:3000**
 
 ## Features
 
-- **Dashboard** — KPI overview, next 7 days, pipeline, activity log
-- **Assets** — Library management with filters, detail drawer, bulk actions
-- **Planner** — Spreadsheet-tight scheduling table, pattern management, auto-generate rows
-- **Captions** — Split list/editor, batch caption generation UI
-- **Export** — CSV preview with date picker and status column toggle
-- **Settings** — Topics/categories, daily patterns, LLM prompt templates
+- **Dashboard** — live KPIs over the real library + planner, next 7 days, pipeline
+- **Assets** — 1,700+ real Google Drive assets; filter, manual topic tagging,
+  posted-date detection, one-click **Scan Drive**
+- **Planner** — mirrors the reference sheet's *Planable CSV Output* tab: videos
+  left, pictures right; every cell editable; **Sync from Sheet**
+- **Captions** — caption workspace over the planner with per-cell and batch
+  LLM generation
+- **Export** — real **Planable CSV download** (exact 10-column layout)
+- **Settings** — topics, daily patterns, LLM prompt templates
+
+## Data sources
+
+- **Google Drive** — asset names pulled by `drive-sync/sync.py` (read-only,
+  metadata scope) → `app/drive-assets.js`
+- **Reference sheet** — the *Planable CSV Output* tab pulled by
+  `drive-sync/sheet-sync.py` → `app/planner-data.js`
+- **localStorage** — planner edits, settings and topic tags persist across reloads
+- **Anthropic API** — caption generation; set `ANTHROPIC_API_KEY` in the server
+  environment to enable it
 
 ## Tech Stack
 
-- **React 18** — via CDN (no build step required)
-- **Babel standalone** — JSX transpilation
-- **Local state management** — React hooks + custom reducer pattern
-- **Hash-based routing** — Single-page navigation
+- **React 18** + **Babel standalone** — via CDN, no build step
+- **Node.js `server.js`** — static serving + `/api/scan-drive`,
+  `/api/sync-sheet`, `/api/generate-caption`
+- **Python `drive-sync/`** — Google Drive + Sheets sync
+- **Hash-based routing**, reducer state, localStorage persistence
 
 ## Port Assignment
 
@@ -61,47 +75,38 @@ Repository: https://github.com/paulvictorbiz-glitch/Content-desk-
 nikky-content-desk/
 ├── Nikky Content Desk.html     ← Entry point
 ├── launch.bat                  ← Local dev launcher
-├── app/                        ← React components
-│   ├── app.jsx                 ← Root router
-│   ├── data.js                 ← Sample data (topics, assets, posts)
-│   ├── state.jsx               ← State + routing
-│   ├── shell.jsx               ← Top bar, tabs, alerts
-│   ├── dashboard.jsx           ← Dashboard screen
-│   ├── assets.jsx              ← Assets library
-│   ├── planner.jsx             ← Post planner
-│   ├── captions.jsx            ← Caption editor
-│   ├── export.jsx              ← CSV export
-│   ├── settings.jsx            ← Configuration
-│   ├── ui.jsx                  ← Design tokens & primitives
-│   └── icons.jsx               ← Icon library
-└── wf-*.jsx                    ← Original wireframe designs
+├── sync-drive.bat              ← Refresh assets from Google Drive
+├── server.js                   ← Static server + sync / generate APIs
+├── CHANGES.md                  ← Change log
+├── drive-sync/                 ← Google Drive + Sheets sync (Python)
+│   ├── sync.py                 ← Drive asset metadata → app/drive-assets.js
+│   ├── sheet-sync.py           ← Planable CSV Output tab → app/planner-data.js
+│   └── credentials.json/token.json  ← OAuth (gitignored)
+└── app/                        ← React components
+    ├── app.jsx                 ← Root router
+    ├── data.js                 ← Asset model + topic/posted classifiers
+    ├── drive-assets.js         ← Generated — real Drive metadata
+    ├── planner-data.js         ← Generated — planner rows from the sheet
+    ├── state.jsx               ← Reducer state + routing + persistence
+    ├── shell.jsx               ← Top bar, tabs, alerts
+    ├── dashboard.jsx           ← Live KPIs
+    ├── assets.jsx              ← Asset library + tagging + Scan Drive
+    ├── planner.jsx             ← Editable videos/pictures planner
+    ├── captions.jsx            ← Caption workspace + LLM generation
+    ├── export.jsx              ← Planable CSV export
+    ├── settings.jsx            ← Configuration
+    ├── ui.jsx / icons.jsx      ← Design primitives
+    └── …
 ```
-
-## Sample Data
-
-The app ships with realistic demo data:
-- **60+ assets** with metadata (type, topic, upload date)
-- **84 posts** across 6 weeks with mixed caption states
-- **3 topics** (Business, Meditation, Martial arts) with colors & LLM prompts
-- **Settings** with Drive config and export schema
 
 ## Development Notes
 
-- **No build step** — Babel/React loaded from CDN
-- **Immutable state** — Updates via reducer pattern
-- **Hash routing** — #/dashboard?filter=empty style URLs
-- **Responsive** — CSS grid layout
-- **Toast notifications** — Auto-dismiss alerts
-
-## Next Steps
-
-- Connect to real backend (Footage Brain API)
-- Persist state to localStorage or database
-- Add real caption generation (Anthropic API)
-- Integrate with Google Drive / cloud storage
-- Add user authentication
+- **No build step** — Babel/React from CDN; `server.js` serves files fresh
+- **Persistence** — planner edits, settings and topic tags live in localStorage
+- **Refreshing data** — "Scan Drive" (Assets) and "Sync from Sheet" (Planner)
+  re-run the Python sync scripts and reload
+- **Caption generation** — needs `ANTHROPIC_API_KEY` in the server environment
 
 ---
 
-**Status:** 95% complete, production-ready for customization  
 **Last updated:** May 22, 2026
