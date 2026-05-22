@@ -41,6 +41,5 @@ echo        (Does NOT conflict with Ziflow :8000 or Footage Brain :8765)
 echo.
 
 REM Start the server using Node.js
+REM (Don't pause - let the window stay open to show server output)
 node "%ROOT%\server.js"
-
-pause
